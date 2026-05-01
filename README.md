@@ -15,7 +15,10 @@
 - **Talos 버전**: v1.13.0
 - **OS 익스텐션**: `siderolabs/qemu-guest-agent` 포함
 
-다른 환경에서 사용할 때는 스크립트의 `NODE_CIDR`, `GATEWAY`, `STORAGE`, `SCHEMATIC_ID` 변수를 환경에 맞게 조정하시면 됩니다.
+다른 환경에서 사용할 때는 두 스크립트 상단의 변수를 환경에 맞게 조정하세요.
+
+- `01-gen-talos-config.sh`: `CLUSTER_NAME`, `CONTROL_PLANE_IP`(첫 CP IP, cluster endpoint), `TALOS_VERSION`, `STORAGE`
+- `02-create-talos-vm.sh`: `SCHEMATIC_ID`(Image Factory에서 발급), `NODE_CIDR`, `GATEWAY`, `DNS_SERVERS`, `SEARCH_DOMAIN`, 역할별 리소스(`MEMORY` / `CORES` / `DISK_SIZE`)
 
 ## 설계 결정 요약
 
@@ -33,29 +36,15 @@
 
 ## 사전 준비
 
-### 1. Proxmox 호스트 설정
+`01-gen-talos-config.sh`가 다음을 자동으로 처리합니다 — 직접 실행할 필요 없음.
 
-```bash
-# Snippets content type 활성화 (한 번만)
-pvesm set local --content iso,vztmpl,backup,snippets
+- `local` 스토리지의 snippets content type 활성화 (`pvesm set local --content ...`)
+- `/var/lib/vz/snippets/` 디렉토리 생성
+- `talosctl` 설치 (없을 때만)
 
-# Snippets 디렉토리 생성
-mkdir -p /var/lib/vz/snippets
-```
+수동 작업으로 한 번만 해두어야 하는 건 아래 한 가지입니다.
 
-### 2. talosctl 설치
-
-```bash
-TALOS_VERSION="v1.13.0"
-curl -Lo /usr/local/bin/talosctl \
-  "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64"
-chmod +x /usr/local/bin/talosctl
-talosctl version --client
-```
-
-`01-gen-talos-config.sh`를 사용하면 이 단계가 자동으로 처리됩니다.
-
-### 3. Image Factory에서 Schematic 생성
+### Image Factory에서 Schematic 생성
 
 [factory.talos.dev](https://factory.talos.dev/)에서 다음 옵션으로 schematic을 만들고 ID를 받습니다.
 
@@ -64,6 +53,20 @@ talosctl version --client
 - System Extensions: **siderolabs/qemu-guest-agent**
 
 발급받은 schematic ID(예: `ce4c980550dd2ab1b17bbf2b08801c7eb59418eafe8f279833297925d67c7515`)는 `02-create-talos-vm.sh`의 `SCHEMATIC_ID` 변수에 넣습니다.
+
+수동으로 미리 환경을 정비하고 싶다면 다음 명령들을 참고하세요(전부 01이 알아서 합니다).
+
+```bash
+# Snippets content type 활성화 + 디렉토리
+pvesm set local --content iso,vztmpl,backup,snippets
+mkdir -p /var/lib/vz/snippets
+
+# talosctl 설치
+TALOS_VERSION="v1.13.0"
+curl -Lo /usr/local/bin/talosctl \
+  "https://github.com/siderolabs/talos/releases/download/${TALOS_VERSION}/talosctl-linux-amd64"
+chmod +x /usr/local/bin/talosctl
+```
 
 ## 배포 워크플로우
 
@@ -160,6 +163,14 @@ talosctl bootstrap
 
 ### 4단계: kubeconfig 추출 및 검증
 
+먼저 클러스터/노드 상태를 talosctl로 확인합니다.
+
+```bash
+talosctl health
+```
+
+`KUBELET`, `ETCD`, `CONTAINER RUNTIME`이 모두 정상이면 kubeconfig을 받아 kubectl로 검증합니다.
+
 ```bash
 talosctl kubeconfig .
 export KUBECONFIG=$(pwd)/kubeconfig
@@ -219,14 +230,25 @@ qm config <VMID> | grep ipconfig0
 ```bash
 # base 템플릿 endpoint 확인
 grep -A 1 "endpoint:" /var/lib/vz/snippets/_talos-cp-base.yaml | head -3
+```
 
-# 일치하지 않으면 base 재생성 (01 재실행 — 인증서/시크릿이 새로 발급되니
-# 기존 클러스터가 있다면 노드별 user.yaml은 백업 후 진행)
+대응은 부트스트랩 여부에 따라 다릅니다.
+
+**부트스트랩 전(아직 `talosctl bootstrap` 안 했음)**: 01을 다시 돌려 base를 재생성해도 안전합니다. 인증서/시크릿이 새로 나오지만 어차피 운영 중인 클러스터가 없습니다. 기존 노드별 user.yaml은 base와 어긋나므로 삭제하고 02를 다시 호출하세요.
+
+```bash
 bash 01-gen-talos-config.sh
+rm /var/lib/vz/snippets/talos-cp-*-user.yaml /var/lib/vz/snippets/talos-wk-*-user.yaml
+# 그 후 02를 노드별로 다시 호출
+```
 
-# 노드별 스닙셋이 이미 있다면 base와 동기화하려면 삭제 후 02 재실행
-rm /var/lib/vz/snippets/talos-cp-01-user.yaml
-bash 02-create-talos-vm.sh 106 talos-cp-01 192.168.2.106 cp
+**부트스트랩 후(클러스터 운영 중)**: `01-gen-talos-config.sh`를 다시 돌리면 인증서/시크릿이 통째로 새로 발급되어 **기존 클러스터를 망가뜨립니다**. 절대 하지 마세요. endpoint를 옮기려면 talosctl로 직접 컨피그를 수정합니다.
+
+```bash
+# 현재 컨피그 추출 → endpoint 수정 → 적용
+talosctl --nodes 192.168.2.106 get machineconfig -o yaml > /tmp/cp.yaml
+# /tmp/cp.yaml의 cluster.controlPlane.endpoint를 새 값으로 편집
+talosctl apply-config --nodes 192.168.2.106 --file /tmp/cp.yaml
 ```
 
 ### `qm destroy` 실패
@@ -260,13 +282,18 @@ talosctl --nodes 192.168.2.106 shutdown
 
 ### 머신 컨피그 변경
 
-snippets 파일을 수정한 뒤 `apply-config`로 반영합니다. cloud-init은 최초 부팅 때만 동작하므로, 이후 변경은 talosctl로 직접 적용해야 합니다.
+cloud-init은 **최초 부팅 때만** 동작합니다. 운영 중 노드의 컨피그를 바꾸려면 talosctl로 직접 적용해야 합니다.
+
+snippets 디렉토리에는 두 종류의 파일이 있고, 의미가 다릅니다.
+
+- `_talos-cp-base.yaml` / `_talos-wk-base.yaml`: 향후 새로 만들 노드의 base. 여기를 고치면 다음에 02로 새 노드를 만들 때 반영됩니다(이미 만든 노드에는 영향 없음).
+- `<VM_NAME>-user.yaml`: 특정 노드의 컨피그. 이 노드를 다시 만들 때(같은 이름으로 02 재호출) 사용됩니다.
+
+운영 중 노드를 바꾸려면 노드별 user.yaml을 수정하고 `apply-config`로 반영하세요.
 
 ```bash
-# snippets 수정
 vim /var/lib/vz/snippets/talos-cp-01-user.yaml
 
-# 노드에 적용
 talosctl apply-config \
   --nodes 192.168.2.106 \
   --file /var/lib/vz/snippets/talos-cp-01-user.yaml
