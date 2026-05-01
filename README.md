@@ -70,9 +70,9 @@ talosctl version --client
 전체 작업은 두 단계로 나뉩니다.
 
 ```
-[01-gen-talos-config.sh] → snippets/에 머신 컨피그 배치
+[01-gen-talos-config.sh] → snippets/에 역할별 base 템플릿 배치 (1회)
             ↓
-[02-create-talos-vm.sh]  → VM 생성 + 부팅 (노드마다 반복)
+[02-create-talos-vm.sh]  → 노드별 스닙셋 자동 생성 + VM 생성/부팅 (노드마다 반복)
             ↓
 [talosctl bootstrap]     → 첫 CP에서 한 번만
             ↓
@@ -81,22 +81,11 @@ talosctl version --client
 
 ### 1단계: 클러스터 컨피그 생성
 
-`01-gen-talos-config.sh`에서 노드 목록과 cluster endpoint를 정의합니다.
+`01-gen-talos-config.sh`에서 클러스터 이름과 cluster endpoint(첫 CP IP)를 정의합니다. 노드 목록을 미리 등록할 필요는 없습니다.
 
 ```bash
 CLUSTER_NAME="talos-homelab"
 CONTROL_PLANE_IP="192.168.2.106"   # 첫 번째 CP 노드 IP
-
-CP_NODES=(
-  "talos-cp-01"
-  "talos-cp-02"
-  "talos-cp-03"
-)
-
-WORKER_NODES=(
-  "talos-w-01"
-  "talos-w-02"
-)
 ```
 
 실행:
@@ -105,12 +94,12 @@ WORKER_NODES=(
 bash 01-gen-talos-config.sh
 ```
 
-이 단계가 끝나면 `~/talos-cluster/_out/`에 다음 파일들이 생성되고, snippets 디렉토리로 자동 복사됩니다.
+이 단계가 끝나면 `~/talos-cluster/_out/`에 다음 파일들이 생성되고, **역할별 base 템플릿**만 snippets 디렉토리로 복사됩니다. 노드별 스닙셋은 2단계에서 자동으로 만들어집니다.
 
 ```
 ~/talos-cluster/_out/
-├── controlplane.yaml   # → snippets/talos-cp-XX-user.yaml
-├── worker.yaml         # → snippets/talos-w-XX-user.yaml
+├── controlplane.yaml   # → snippets/_talos-cp-base.yaml
+├── worker.yaml         # → snippets/_talos-wk-base.yaml
 └── talosconfig         # talosctl 클라이언트 인증 (반드시 안전하게 보관)
 ```
 
@@ -133,8 +122,8 @@ bash 02-create-talos-vm.sh 107 talos-cp-02 192.168.2.107 cp
 bash 02-create-talos-vm.sh 108 talos-cp-03 192.168.2.108 cp
 
 # Worker
-bash 02-create-talos-vm.sh 111 talos-w-01 192.168.2.111 worker
-bash 02-create-talos-vm.sh 112 talos-w-02 192.168.2.112 worker
+bash 02-create-talos-vm.sh 111 talos-wk-01 192.168.2.111 worker
+bash 02-create-talos-vm.sh 112 talos-wk-02 192.168.2.112 worker
 ```
 
 `ROLE`에 따라 리소스 사양이 다르게 적용됩니다.
@@ -145,6 +134,13 @@ bash 02-create-talos-vm.sh 112 talos-w-02 192.168.2.112 worker
 | worker | 4096 MiB | 4 | 64 GB |
 
 운영 환경에 맞게 스크립트의 역할별 분기 로직을 조정할 수 있습니다.
+
+`02-create-talos-vm.sh`는 호출 시 다음과 같이 동작합니다.
+
+- `<VM_NAME>-user.yaml` 스닙셋이 이미 있으면 그대로 사용 (수동으로 패치한 컨피그가 보존됩니다).
+- 없으면 `ROLE`에 맞는 base 템플릿(`_talos-cp-base.yaml` 또는 `_talos-wk-base.yaml`)을 복사해 새로 생성.
+
+따라서 새 노드를 추가할 때 01을 다시 돌릴 필요 없이 02만 호출하면 됩니다. 노드별로 컨피그를 다르게 가져가고 싶다면, 02 실행 후 생성된 `<VM_NAME>-user.yaml`을 직접 수정한 뒤 `talosctl apply-config`로 반영하세요.
 
 ### 3단계: etcd 부트스트랩
 
@@ -221,14 +217,16 @@ qm config <VMID> | grep ipconfig0
 `talosctl gen config` 시점에 박힌 `cluster.controlPlane.endpoint`가 실제 노드 IP와 다르면 부트스트랩 후 클러스터 endpoint 접근이 꼬입니다.
 
 ```bash
-# 컨피그 endpoint 확인
-grep -A 1 "endpoint:" /var/lib/vz/snippets/talos-cp-01-user.yaml | head -3
+# base 템플릿 endpoint 확인
+grep -A 1 "endpoint:" /var/lib/vz/snippets/_talos-cp-base.yaml | head -3
 
-# 일치하지 않으면 재생성
-cd ~/talos-cluster
-rm -rf _out
-talosctl gen config talos-homelab https://192.168.2.106:6443 --output-dir ./_out
-cp _out/controlplane.yaml /var/lib/vz/snippets/talos-cp-01-user.yaml
+# 일치하지 않으면 base 재생성 (01 재실행 — 인증서/시크릿이 새로 발급되니
+# 기존 클러스터가 있다면 노드별 user.yaml은 백업 후 진행)
+bash 01-gen-talos-config.sh
+
+# 노드별 스닙셋이 이미 있다면 base와 동기화하려면 삭제 후 02 재실행
+rm /var/lib/vz/snippets/talos-cp-01-user.yaml
+bash 02-create-talos-vm.sh 106 talos-cp-01 192.168.2.106 cp
 ```
 
 ### `qm destroy` 실패
@@ -325,11 +323,13 @@ talosctl etcd snapshot ~/talos-backups/etcd-$(date +%Y%m%d-%H%M%S).db \
     └── talosconfig             # 안전하게 보관 필수
 
 /var/lib/vz/snippets/           # cloud-init user-data
-├── talos-cp-01-user.yaml
+├── _talos-cp-base.yaml         # 01이 배치하는 controlplane base 템플릿
+├── _talos-wk-base.yaml         # 01이 배치하는 worker base 템플릿
+├── talos-cp-01-user.yaml       # 02가 base에서 생성 (노드별)
 ├── talos-cp-02-user.yaml
 ├── talos-cp-03-user.yaml
-├── talos-w-01-user.yaml
-└── talos-w-02-user.yaml
+├── talos-wk-01-user.yaml
+└── talos-wk-02-user.yaml
 
 /var/lib/vz/template/iso/
 └── nocloud-amd64.raw           # Talos 디스크 이미지

@@ -3,8 +3,13 @@
 # Talos VM 생성 스크립트 (Proxmox)
 #
 # 사전 요구사항:
-#   - 01-gen-talos-config.sh 가 먼저 실행되어 snippets/에 user.yaml이 있어야 함
+#   - 01-gen-talos-config.sh 가 먼저 한 번 실행되어 snippets/에 역할별
+#     base 템플릿(_talos-cp-base.yaml, _talos-wk-base.yaml)이 있어야 함
 #   - Proxmox 호스트에서 root로 실행
+#
+# 동작:
+#   - <VM_NAME>-user.yaml 이 이미 있으면 그대로 사용 (수동 패치 보존)
+#   - 없으면 ROLE에 맞는 base 템플릿을 복사해 새로 생성
 #
 # 사용법:
 #   bash 02-create-talos-vm.sh <VMID> <VM_NAME> <NODE_IP> [ROLE]
@@ -18,7 +23,7 @@
 # 예시:
 #   bash 02-create-talos-vm.sh 106 talos-cp-01 192.168.2.106 cp
 #   bash 02-create-talos-vm.sh 107 talos-cp-02 192.168.2.107 cp
-#   bash 02-create-talos-vm.sh 111 talos-w-01  192.168.2.111 worker
+#   bash 02-create-talos-vm.sh 111 talos-wk-01  192.168.2.111 worker
 #
 
 set -e
@@ -36,7 +41,7 @@ Usage: $0 <VMID> <VM_NAME> <NODE_IP> [ROLE]
 
 Examples:
   $0 106 talos-cp-01 192.168.2.106 cp
-  $0 111 talos-w-01  192.168.2.111 worker
+  $0 111 talos-wk-01  192.168.2.111 worker
 
 EOF
   exit 1
@@ -91,7 +96,10 @@ else
 fi
 
 # 경로
-SNIPPET_PATH="/var/lib/vz/snippets/${VM_NAME}-user.yaml"
+SNIPPETS_DIR="/var/lib/vz/snippets"
+SNIPPET_PATH="${SNIPPETS_DIR}/${VM_NAME}-user.yaml"
+CP_BASE_SNIPPET="${SNIPPETS_DIR}/_talos-cp-base.yaml"
+WK_BASE_SNIPPET="${SNIPPETS_DIR}/_talos-wk-base.yaml"
 RAW_FILE="/var/lib/vz/template/iso/nocloud-amd64.raw"
 IMAGE_URL="https://factory.talos.dev/image/${SCHEMATIC_ID}/${TALOS_VERSION}/nocloud-amd64.raw.xz"
 
@@ -110,11 +118,26 @@ echo "  Disk:    ${DISK_SIZE}"
 echo "==========================================================="
 echo ""
 
-# 머신 컨피그 파일 존재
-if [ ! -f "$SNIPPET_PATH" ]; then
-  echo "ERROR: machine config not found at $SNIPPET_PATH"
-  echo "Run 01-gen-talos-config.sh first, and ensure '${VM_NAME}' is listed in CP_NODES or WORKER_NODES."
-  exit 1
+# 머신 컨피그 스닙셋 준비:
+#   - 이미 있으면 그대로 사용 (수동 패치 보존)
+#   - 없으면 ROLE에 맞는 base 템플릿을 복사해 생성
+if [ -f "$SNIPPET_PATH" ]; then
+  echo "✓ Reusing existing snippet: $SNIPPET_PATH"
+else
+  if [ "$ROLE" = "cp" ]; then
+    BASE_SNIPPET="$CP_BASE_SNIPPET"
+  else
+    BASE_SNIPPET="$WK_BASE_SNIPPET"
+  fi
+
+  if [ ! -f "$BASE_SNIPPET" ]; then
+    echo "ERROR: base template not found at $BASE_SNIPPET"
+    echo "Run 01-gen-talos-config.sh once on this host to generate the base templates."
+    exit 1
+  fi
+
+  cp "$BASE_SNIPPET" "$SNIPPET_PATH"
+  echo "✓ Created snippet from base: $SNIPPET_PATH (← $(basename "$BASE_SNIPPET"))"
 fi
 
 # Snippets content 활성화

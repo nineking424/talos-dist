@@ -4,8 +4,9 @@
 #
 # - talosctl이 없으면 자동 설치
 # - controlplane/worker/talosconfig 생성
-# - controlplane.yaml을 Proxmox snippets 디렉토리로 복사
+# - 역할별 base 템플릿(_talos-cp-base.yaml, _talos-wk-base.yaml)을 snippets 디렉토리로 복사
 # - local 스토리지의 snippets content type 활성화 확인
+# - per-node 스닙셋은 02-create-talos-vm.sh가 ROLE에 맞춰 동적으로 생성한다
 #
 # 사용법: bash 01-gen-talos-config.sh
 #
@@ -20,18 +21,11 @@ WORK_DIR="${HOME}/talos-cluster"
 SNIPPETS_DIR="/var/lib/vz/snippets"
 STORAGE="local"
 
-# CP 노드별 snippet 파일명 (필요한 만큼 추가/수정)
-CP_NODES=(
-  "talos-cp-01"
-  # "talos-cp-02"
-  # "talos-cp-03"
-)
-
-# Worker 노드별 snippet 파일명
-WORKER_NODES=(
-  # "talos-w-01"
-  # "talos-w-02"
-)
+# 역할별 base 스닙셋 파일명. 02-create-talos-vm.sh가 ROLE에 맞춰 이 파일을
+# <VM_NAME>-user.yaml로 복사해 사용한다. VM-named 스닙셋과 충돌하지 않도록
+# '_' prefix로 네임스페이스를 분리한다.
+CP_BASE_SNIPPET="_talos-cp-base.yaml"
+WK_BASE_SNIPPET="_talos-wk-base.yaml"
 
 # ==== 0. 사전 체크 & 준비 ====
 
@@ -71,30 +65,26 @@ talosctl gen config "$CLUSTER_NAME" "https://${CONTROL_PLANE_IP}:6443" \
 
 ls -la _out/
 
-# ==== 2. snippets 디렉토리로 복사 ====
+# ==== 2. snippets 디렉토리로 base 템플릿 배치 ====
 
 echo ""
-echo "Copying machine configs to ${SNIPPETS_DIR}..."
+echo "Placing base templates in ${SNIPPETS_DIR}..."
 
-for node in "${CP_NODES[@]}"; do
-  cp _out/controlplane.yaml "${SNIPPETS_DIR}/${node}-user.yaml"
-  echo "  ✓ ${SNIPPETS_DIR}/${node}-user.yaml (controlplane)"
-done
+cp _out/controlplane.yaml "${SNIPPETS_DIR}/${CP_BASE_SNIPPET}"
+echo "  ✓ ${SNIPPETS_DIR}/${CP_BASE_SNIPPET} (controlplane base)"
 
-for node in "${WORKER_NODES[@]}"; do
-  cp _out/worker.yaml "${SNIPPETS_DIR}/${node}-user.yaml"
-  echo "  ✓ ${SNIPPETS_DIR}/${node}-user.yaml (worker)"
-done
+cp _out/worker.yaml "${SNIPPETS_DIR}/${WK_BASE_SNIPPET}"
+echo "  ✓ ${SNIPPETS_DIR}/${WK_BASE_SNIPPET} (worker base)"
 
 # ==== 3. 검증 ====
 
 echo ""
 echo "Verifying snippets..."
-pvesm list "$STORAGE" --content snippets | grep -E "talos-(cp|w)-" || true
+pvesm list "$STORAGE" --content snippets | grep -E "_talos-(cp|wk)-base" || true
 
 echo ""
 echo "Endpoint configured in machine config:"
-grep -A 0 "endpoint:" "${SNIPPETS_DIR}/${CP_NODES[0]}-user.yaml" | head -3
+grep -A 0 "endpoint:" "${SNIPPETS_DIR}/${CP_BASE_SNIPPET}" | head -3
 
 # ==== 4. 안내 ====
 
