@@ -12,18 +12,31 @@
 #   - 없으면 ROLE에 맞는 base 템플릿을 복사해 새로 생성
 #
 # 사용법:
-#   bash 02-create-talos-vm.sh <VMID> <VM_NAME> <NODE_IP> [ROLE]
+#   bash 02-create-talos-vm.sh [OPTIONS] <VMID> <VM_NAME> <NODE_IP> [ROLE]
 #
-# 인자:
+# 위치 인자:
 #   VMID      Proxmox VM ID (정수, 예: 106)
 #   VM_NAME   VM 이름 (snippets 파일명과 일치해야 함, 예: talos-cp-01)
 #   NODE_IP   노드 IP (예: 192.168.2.106)
 #   ROLE      cp | worker (기본값: cp, 메모리/코어 차등 적용)
 #
+# 옵션 (선택):
+#   --cpu N           CPU 코어 수 (역할별 기본값을 덮어씀)
+#   --memory N        메모리 크기 (MiB)
+#   --disk SIZE       디스크 크기 (예: 32G, 64G)
+#   --endpoint URL    이 노드의 user.yaml에 박힌 cluster.controlPlane.endpoint
+#                     (예: https://192.168.2.200:6443) — kube-vip 같은 VIP를
+#                     쓰거나 외부 LB로 endpoint를 바꿀 때 사용. 모든 노드에
+#                     같은 값을 줘야 클러스터가 일관되게 동작합니다.
+#
 # 예시:
 #   bash 02-create-talos-vm.sh 106 talos-cp-01 192.168.2.106 cp
 #   bash 02-create-talos-vm.sh 107 talos-cp-02 192.168.2.107 cp
 #   bash 02-create-talos-vm.sh 111 talos-wk-01  192.168.2.111 worker
+#   bash 02-create-talos-vm.sh --cpu 4 --memory 8192 --disk 64G \
+#     106 talos-cp-01 192.168.2.106 cp
+#   bash 02-create-talos-vm.sh --endpoint https://192.168.2.200:6443 \
+#     106 talos-cp-01 192.168.2.106 cp
 #
 
 set -e
@@ -32,20 +45,60 @@ set -e
 
 usage() {
   cat <<EOF
-Usage: $0 <VMID> <VM_NAME> <NODE_IP> [ROLE]
+Usage: $0 [OPTIONS] <VMID> <VM_NAME> <NODE_IP> [ROLE]
 
+Positional:
   VMID      Proxmox VM ID (예: 106)
   VM_NAME   VM 이름, snippets 파일명과 일치 (예: talos-cp-01)
   NODE_IP   노드 IP (예: 192.168.2.106)
   ROLE      cp | worker (기본값: cp)
 
+Options:
+  --cpu N           CPU 코어 수
+  --memory N        메모리 크기 (MiB)
+  --disk SIZE       디스크 크기 (예: 32G, 64G)
+  --endpoint URL    cluster.controlPlane.endpoint (예: https://10.0.0.10:6443)
+  -h, --help        이 도움말 표시
+
 Examples:
   $0 106 talos-cp-01 192.168.2.106 cp
   $0 111 talos-wk-01  192.168.2.111 worker
+  $0 --cpu 4 --memory 8192 --disk 64G 106 talos-cp-01 192.168.2.106 cp
+  $0 --endpoint https://192.168.2.200:6443 106 talos-cp-01 192.168.2.106 cp
 
 EOF
   exit 1
 }
+
+CUSTOM_CPU=""
+CUSTOM_MEM=""
+CUSTOM_DISK=""
+CUSTOM_ENDPOINT=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --cpu)
+      [ -z "${2:-}" ] && { echo "ERROR: --cpu requires a value"; usage; }
+      CUSTOM_CPU="$2"; shift 2 ;;
+    --memory|--mem)
+      [ -z "${2:-}" ] && { echo "ERROR: --memory requires a value"; usage; }
+      CUSTOM_MEM="$2"; shift 2 ;;
+    --disk)
+      [ -z "${2:-}" ] && { echo "ERROR: --disk requires a value"; usage; }
+      CUSTOM_DISK="$2"; shift 2 ;;
+    --endpoint)
+      [ -z "${2:-}" ] && { echo "ERROR: --endpoint requires a value"; usage; }
+      CUSTOM_ENDPOINT="$2"; shift 2 ;;
+    -h|--help)
+      usage ;;
+    --)
+      shift; break ;;
+    -*)
+      echo "ERROR: unknown option: $1"; usage ;;
+    *)
+      break ;;
+  esac
+done
 
 if [ $# -lt 3 ]; then
   usage
@@ -72,6 +125,26 @@ if [[ "$ROLE" != "cp" && "$ROLE" != "worker" ]]; then
   exit 1
 fi
 
+if [ -n "$CUSTOM_CPU" ] && ! [[ "$CUSTOM_CPU" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: --cpu must be a positive integer, got: $CUSTOM_CPU"
+  exit 1
+fi
+
+if [ -n "$CUSTOM_MEM" ] && ! [[ "$CUSTOM_MEM" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ERROR: --memory must be a positive integer (MiB), got: $CUSTOM_MEM"
+  exit 1
+fi
+
+if [ -n "$CUSTOM_DISK" ] && ! [[ "$CUSTOM_DISK" =~ ^[1-9][0-9]*[GM]$ ]]; then
+  echo "ERROR: --disk must be like 32G or 1024M, got: $CUSTOM_DISK"
+  exit 1
+fi
+
+if [ -n "$CUSTOM_ENDPOINT" ] && ! [[ "$CUSTOM_ENDPOINT" =~ ^https?://[^[:space:]]+$ ]]; then
+  echo "ERROR: --endpoint must be an http(s) URL, got: $CUSTOM_ENDPOINT"
+  exit 1
+fi
+
 # ==== 환경 변수 (필요시 수정) ====
 
 STORAGE=local
@@ -84,7 +157,7 @@ GATEWAY="192.168.1.1"
 DNS_SERVERS="1.214.68.2 1.1.1.1"
 SEARCH_DOMAIN="local"
 
-# 역할별 리소스
+# 역할별 리소스 (옵션으로 덮어쓸 수 있음)
 if [ "$ROLE" = "cp" ]; then
   MEMORY=4096
   CORES=2
@@ -94,6 +167,10 @@ else
   CORES=4
   DISK_SIZE=64G
 fi
+
+[ -n "$CUSTOM_CPU" ]  && CORES="$CUSTOM_CPU"
+[ -n "$CUSTOM_MEM" ]  && MEMORY="$CUSTOM_MEM"
+[ -n "$CUSTOM_DISK" ] && DISK_SIZE="$CUSTOM_DISK"
 
 # 경로
 SNIPPETS_DIR="/var/lib/vz/snippets"
@@ -138,6 +215,19 @@ else
 
   cp "$BASE_SNIPPET" "$SNIPPET_PATH"
   echo "✓ Created snippet from base: $SNIPPET_PATH (← $(basename "$BASE_SNIPPET"))"
+fi
+
+# --endpoint 옵션이 주어졌으면 user.yaml의 cluster.controlPlane.endpoint를 치환
+# (주석 라인은 ^[[:space:]]+endpoint: 패턴에 매칭되지 않으므로 안전)
+if [ -n "$CUSTOM_ENDPOINT" ]; then
+  ESCAPED=$(printf '%s' "$CUSTOM_ENDPOINT" | sed -e 's/[&|\\]/\\&/g')
+  sed -i -E "s|^([[:space:]]+endpoint:[[:space:]]+)https?://[^[:space:]]+|\1${ESCAPED}|" "$SNIPPET_PATH"
+  if ! grep -qF "endpoint: ${CUSTOM_ENDPOINT}" "$SNIPPET_PATH"; then
+    echo "ERROR: failed to apply --endpoint to $SNIPPET_PATH"
+    echo "       (no matching cluster.controlPlane.endpoint line was rewritten)"
+    exit 1
+  fi
+  echo "✓ Endpoint rewritten in $SNIPPET_PATH → ${CUSTOM_ENDPOINT}"
 fi
 
 # Snippets content 활성화

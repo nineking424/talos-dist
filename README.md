@@ -18,7 +18,7 @@
 다른 환경에서 사용할 때는 두 스크립트 상단의 변수를 환경에 맞게 조정하세요.
 
 - `01-gen-talos-config.sh`: `CLUSTER_NAME`, `CONTROL_PLANE_IP`(첫 CP IP, cluster endpoint), `TALOS_VERSION`, `STORAGE`
-- `02-create-talos-vm.sh`: `SCHEMATIC_ID`(Image Factory에서 발급), `NODE_CIDR`, `GATEWAY`, `DNS_SERVERS`, `SEARCH_DOMAIN`, 역할별 리소스(`MEMORY` / `CORES` / `DISK_SIZE`)
+- `02-create-talos-vm.sh`: `SCHEMATIC_ID`(Image Factory에서 발급), `NODE_CIDR`, `GATEWAY`, `DNS_SERVERS`, `SEARCH_DOMAIN`, 역할별 리소스(`MEMORY` / `CORES` / `DISK_SIZE`) — 리소스는 기본값이고 호출 시 `--cpu` / `--memory` / `--disk` 옵션으로 노드별 덮어쓸 수 있습니다. cluster endpoint도 `--endpoint`로 노드별 덮어쓸 수 있습니다(VIP/외부 LB용).
 
 ## 설계 결정 요약
 
@@ -113,7 +113,13 @@ bash 01-gen-talos-config.sh
 `02-create-talos-vm.sh`는 인자 기반으로 동작합니다.
 
 ```bash
-Usage: 02-create-talos-vm.sh <VMID> <VM_NAME> <NODE_IP> [ROLE]
+Usage: 02-create-talos-vm.sh [OPTIONS] <VMID> <VM_NAME> <NODE_IP> [ROLE]
+
+Options:
+  --cpu N           CPU 코어 수 (역할별 기본값을 덮어씀)
+  --memory N        메모리 크기 (MiB)
+  --disk SIZE       디스크 크기 (예: 32G, 64G)
+  --endpoint URL    cluster.controlPlane.endpoint (예: https://10.0.0.10:6443)
 ```
 
 CP 3대 + Worker 2대를 만드는 예시:
@@ -136,7 +142,25 @@ bash 02-create-talos-vm.sh 112 talos-wk-02 192.168.2.112 worker
 | cp | 4096 MiB | 2 | 32 GB |
 | worker | 4096 MiB | 4 | 64 GB |
 
-운영 환경에 맞게 스크립트의 역할별 분기 로직을 조정할 수 있습니다.
+운영 환경에 맞게 스크립트의 역할별 분기 로직을 조정하거나, 호출 시 옵션으로 덮어쓸 수 있습니다.
+
+```bash
+# CP에 코어/메모리/디스크를 더 크게 할당
+bash 02-create-talos-vm.sh --cpu 4 --memory 8192 --disk 64G \
+  106 talos-cp-01 192.168.2.106 cp
+```
+
+cluster endpoint를 노드 IP 대신 VIP나 외부 LB로 두고 싶다면 `--endpoint`를 사용하세요. 옵션은 해당 노드의 `<VM_NAME>-user.yaml`에 박힌 `cluster.controlPlane.endpoint`만 치환하므로, **모든 노드에 같은 값으로 호출해야** 클러스터가 일관되게 동작합니다.
+
+```bash
+# 예: kube-vip로 192.168.2.200을 CP VIP로 쓰는 경우
+for i in 1 2 3; do
+  bash 02-create-talos-vm.sh --endpoint https://192.168.2.200:6443 \
+    10$((i+5)) talos-cp-0${i} 192.168.2.10$((i+5)) cp
+done
+```
+
+`base` 템플릿 자체의 endpoint를 영구히 바꾸고 싶다면 `01-gen-talos-config.sh`의 `CONTROL_PLANE_IP`를 바꾸고 01을 다시 돌리는 게 더 깔끔합니다(부트스트랩 전 한정).
 
 `02-create-talos-vm.sh`는 호출 시 다음과 같이 동작합니다.
 
