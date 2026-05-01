@@ -205,7 +205,7 @@ qm create "$VMID" \
   --memory "$MEMORY" \
   --balloon 0 \
   --net0 virtio,bridge=vmbr0,firewall=0 \
-  --efidisk0 "${STORAGE}:0,efitype=4m,pre-enrolled-keys=1,format=qcow2" \
+  --efidisk0 "${STORAGE}:0,efitype=4m,pre-enrolled-keys=0,format=qcow2" \
   --agent enabled=1 \
   --serial0 socket
 

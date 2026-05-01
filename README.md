@@ -26,7 +26,7 @@
 |---|---|---|
 | 부팅 방식 | cloud-init (nocloud) | VM 시작 즉시 머신 컨피그 자동 적용, 템플릿화/대량 배포 용이 |
 | Talos 이미지 | `nocloud-amd64.raw` | nocloud platform용 디스크 이미지 (ISO 아님) |
-| BIOS | OVMF (UEFI) + EFI Disk | 최신 부팅 표준 |
+| BIOS | OVMF (UEFI) + EFI Disk (`pre-enrolled-keys=0`) | nocloud 이미지가 Secure Boot 미서명이라 키 enroll 비활성 |
 | Machine | q35 | PCIe 지원, 권장 머신 타입 |
 | SCSI Controller | virtio-scsi-single | 디스크별 컨트롤러 분리로 I/O 성능 향상 |
 | CPU | host | 호스트 CPU 기능 그대로 노출 |
@@ -208,6 +208,19 @@ qm config <VMID>
 ```
 
 `scsi0`에 import된 디스크가 attach되어 있고 `boot: order=scsi0`인지 확인하세요. nocloud 이미지는 ISO가 아닌 `.raw`/`.qcow2` 디스크로 import되어야 합니다.
+
+### `BdsDxe: failed to load Boot0001 ... Access Denied` / `Security Violation`
+
+EFI Disk가 Secure Boot용 키(Microsoft 등)를 미리 enroll한 상태(`pre-enrolled-keys=1`)에서 만들어졌는데 Talos `nocloud-amd64.raw`에는 secure boot 서명이 없어 펌웨어가 부팅을 거부할 때 나타납니다. `No bootable option or device was found`로 끝나고 부트 매니저 메뉴로 떨어집니다.
+
+`02-create-talos-vm.sh`는 EFI Disk를 `pre-enrolled-keys=0`으로 만들어 이 문제를 피합니다. 직접 만든 VM에서 이 에러가 보이면 EFI Disk를 다시 만드세요.
+
+```bash
+qm stop <VMID> --skiplock 1
+qm set <VMID> --delete efidisk0
+qm set <VMID> --efidisk0 local:0,efitype=4m,pre-enrolled-keys=0,format=qcow2
+qm start <VMID>
+```
 
 ### 외부 통신 안 됨 (이미지 pull 실패 등)
 
